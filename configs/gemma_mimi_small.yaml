@@ -1,0 +1,49 @@
+# Prototyping config: small Gemma backbone + Mimi codec.
+# Swap `data.*` paths and `model.text_backbone` size once the pipeline
+# is verified on LJSpeech and you move to real target-language data.
+
+model:
+  text_backbone: google/gemma-3-1b-pt   # try gemma-3-270m first if VRAM is tight
+  mimi_repo: kyutai/mimi
+  num_quantizers: 8        # fewer codebooks = shorter sequences, cheaper training
+  freeze_text_embeddings: false
+  freeze_mimi: true        # Mimi is always used frozen, this just documents it
+
+special_tokens:
+  start_of_speech: "<|start_of_speech|>"
+  end_of_speech: "<|end_of_speech|>"
+  # bos/eos/pad are taken from Gemma's own tokenizer, not redefined here
+
+data:
+  train_shards: data/processed/ljspeech/train-*.jsonl
+  val_shards: data/processed/ljspeech/val-*.jsonl
+  max_seq_len: 1536
+  loss_on_text: false      # true = also train the model to reproduce the
+                            # input text tokens; false = text is context only
+
+training:
+  output_dir: runs/gemma_mimi_small
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.03
+  num_train_epochs: 3
+  bf16: false
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 500
+  save_total_limit: 3
+  seed: 42
+
+finetune:
+  # used by the same pretrain.py entrypoint when --stage finetune is passed
+  train_shards: data/processed/target_speaker/train-*.jsonl
+  val_shards: data/processed/target_speaker/val-*.jsonl
+  learning_rate: 5.0e-5
+  num_train_epochs: 5
+  init_from: runs/gemma_mimi_small/checkpoint-best
+
+inference:
+  max_new_audio_tokens: 2048
+  temperature: 0.7
+  top_p: 0.9

@@ -1,0 +1,49 @@
+# CSM-style config: Gemma backbone predicts codebook 0, a small Llama
+# decoder predicts codebooks 1..Q-1 of each frame.
+
+model:
+  text_backbone: google/gemma-3-1b-pt
+  mimi_repo: kyutai/mimi
+  num_quantizers: 16          # sequence length does NOT grow with this (only the small decoder does).
+                              # Max 32. Must be <= what the shards were encoded with.
+  decoder:
+    hidden_size: 1024
+    num_layers: 6
+    num_heads: 8
+    intermediate_size: 3072
+  decoder_frame_fraction: 1.0 # <1.0 trains the decoder on a random subset of frames (saves memory)
+  c0_loss_weight: 1.0
+  acoustic_loss_weight: 1.0
+
+data:
+  train_shards: data/processed/ljspeech_csm/train-*.pt
+  val_shards: data/processed/ljspeech_csm/val-*.pt
+  max_seq_len: 1024           # text tokens + 1 + frames  (frames = 12.5/s)
+
+training:
+  output_dir: runs/gemma_csm
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4
+  backbone_lr: 5.0e-5         # pretrained Gemma
+  new_lr: 3.0e-4              # randomly initialised audio embeddings / heads / decoder
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  num_train_epochs: 15
+  max_grad_norm: 1.0
+  bf16: true                  # autocast; weights/optimizer stay fp32
+  gradient_checkpointing: false
+  logging_steps: 20
+  eval_steps: 500
+  eval_batches: 50
+  save_steps: 500
+  save_total_limit: 3
+  num_workers: 2
+  seed: 42
+
+inference:
+  max_frames: 600
+  temperature_c0: 0.9
+  top_k_c0: 50
+  temperature_ac: 0.7
+  top_k_ac: 20
