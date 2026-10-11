@@ -51,7 +51,7 @@ def main() -> None:
     codec = MimiCodec.load(cfg["model"]["mimi_repo"], num_quantizers=model.cfg.num_quantizers, device=args.device)
 
     ids = [tok.bos_token_id] + tok(args.text, add_special_tokens=False)["input_ids"]
-    gen = torch.Generator(device="cpu")
+    gen = torch.Generator(device=args.device)
     if args.seed is not None:
         gen.manual_seed(args.seed)
     codes = model.generate(

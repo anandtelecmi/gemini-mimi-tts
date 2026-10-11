@@ -32,6 +32,7 @@ class CodesDataset(Dataset):
                 if max_frames is not None and codes.shape[1] > max_frames:
                     continue
                 self.items.append({"text_ids": ex["text_ids"], "codes": codes})
+        print(f"[data] loaded {len(self.items)} utterances from {len(files)} shard(s) ({pattern})", flush=True)
 
     def __len__(self) -> int:
         return len(self.items)
