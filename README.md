@@ -139,3 +139,4 @@ scripts/
   download_ljspeech.py
   prepare_dataset.py
 ```
+# gemini-mimi-tts
