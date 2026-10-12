@@ -43,6 +43,8 @@ def teacher_hidden(model, item, dev, dtype):
 @torch.no_grad()
 def sample_rest(model, h, frames, k, temperature, top_k, gen):
     """Keep real codebooks 0..k-1, sample k..Q-1 autoregressively with the decoder."""
+    if model.cfg.codec_embeds:
+        raise SystemExit('this oracle path does not implement codec_embeds; use model.generate-based outputs')
     Q, V = model.cfg.num_quantizers, model.cfg.codebook_size
     T = h.shape[0]
     offs = torch.arange(k, device=h.device) * V

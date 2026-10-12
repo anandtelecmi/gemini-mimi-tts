@@ -1,0 +1,50 @@
+# Stage 1b (codec-aware): continue pretraining from runs/gemma_csm_emilia/best with codec_embeds on.
+# New weights start at zero, so training starts from the old model's quality.
+# Stage 2 (configs/gemma_csm_ft.yaml): fine-tune on clean single-speaker data (LJSpeech).
+
+model:
+  text_backbone: google/gemma-3-1b-pt
+  mimi_repo: kyutai/mimi
+  num_quantizers: 16
+  decoder:
+    hidden_size: 1024
+    num_layers: 6
+    num_heads: 8
+    intermediate_size: 3072
+  codec_embeds: true            # feed Mimi's codeword vectors / residual-chain state to backbone + decoder
+  decoder_frame_fraction: 0.5   # decoder sees a random half of the frames each step (faster, CSM-style)
+  c0_loss_weight: 1.0
+  acoustic_loss_weight: 1.0
+
+data:
+  train_shards: data/processed/emilia_en/train-*.pt
+  val_shards: data/processed/emilia_en/val-*.pt
+  max_seq_len: 1024
+
+training:
+  output_dir: runs/gemma_csm_emilia_geo
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4     # effective batch 32 utterances
+  backbone_lr: 4.0e-5
+  new_lr: 2.5e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.02
+  min_lr_ratio: 0.1
+  num_train_epochs: 5                # ~11k steps/epoch; stage 1 val loss was still falling
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: false
+  logging_steps: 50
+  eval_steps: 1000
+  eval_batches: 100
+  save_steps: 4000
+  save_total_limit: 2
+  num_workers: 4
+  seed: 42
+
+inference:
+  max_frames: 600
+  temperature_c0: 0.9
+  top_k_c0: 50
+  temperature_ac: 0.7
+  top_k_ac: 20

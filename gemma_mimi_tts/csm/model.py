@@ -55,6 +55,12 @@ class CSMConfig:
     decoder_frame_fraction: float = 1.0
     c0_loss_weight: float = 1.0
     acoustic_loss_weight: float = 1.0
+    # Codec-aware inputs/outputs: feed Mimi's own codeword vectors (and the running sum of the
+    # acoustic residual chain) to the backbone and the decoder, and add a codeword-similarity term
+    # to the fine-codebook logits. All new weights start at zero, so an existing checkpoint
+    # behaves identically at the start.
+    codec_embeds: bool = False
+    codec_dim: int = 256
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps(asdict(self), indent=2))
@@ -132,6 +138,18 @@ class GemmaCSM(nn.Module):
         nn.init.normal_(self.dec_embed.weight, std=0.02)
         self.ac_heads = nn.Parameter(torch.randn(Q - 1, dh, V) * dh ** -0.5)
 
+        if cfg.codec_embeds:
+            Dc = cfg.codec_dim
+            # frozen Mimi codeword vectors: [Q, V, Dc] (row 0 = semantic codebook, rows 1.. = acoustic chain)
+            self.register_buffer("codec_table", torch.zeros(Q, V, Dc))
+            self.cg_back_sem = nn.Linear(Dc, D, bias=False)
+            self.cg_back_ac = nn.Linear(Dc, D, bias=False)
+            self.cg_dec_sem = nn.Linear(Dc, dh, bias=False)
+            self.cg_dec_ac = nn.Linear(Dc, dh, bias=False)
+            self.ac_geo = nn.Parameter(torch.zeros(Q - 1, dh, Dc))
+            for m in (self.cg_back_sem, self.cg_back_ac, self.cg_dec_sem, self.cg_dec_ac):
+                nn.init.zeros_(m.weight)
+
         self.to(dtype)
 
     # ------------------------------------------------------------------ utils
@@ -140,11 +158,49 @@ class GemmaCSM(nn.Module):
         bb = {id(p) for p in self.backbone.parameters()}
         return [p for p in self.parameters() if id(p) not in bb]
 
+    # ------------------------------------------------------- codec geometry
+    @staticmethod
+    def build_codec_table(mimi_model, num_quantizers: int) -> torch.Tensor:
+        """Mimi codeword vectors as a [Q, V, Dc] tensor. Mimi is a *split* RVQ: codebook 0 is its own
+        (semantic) quantizer; codebooks 1.. form one residual chain whose codeword sum is the
+        reconstruction. A single global scale keeps their relative magnitudes."""
+        q = mimi_model.quantizer
+        rows = [q.semantic_residual_vector_quantizer.layers[0].codebook.embed]
+        for k in range(num_quantizers - 1):
+            rows.append(q.acoustic_residual_vector_quantizer.layers[k].codebook.embed)
+        table = torch.stack([r.detach().float().cpu() for r in rows])
+        return table / table[1:].std().clamp(min=1e-6)
+
+    def set_codec_table(self, table: torch.Tensor) -> None:
+        if not self.cfg.codec_embeds:
+            raise ValueError("model was built with codec_embeds=False")
+        if tuple(table.shape) != tuple(self.codec_table.shape):
+            raise ValueError(f"codec table {tuple(table.shape)} != expected {tuple(self.codec_table.shape)}")
+        self.codec_table.copy_(table.to(self.codec_table.dtype))
+
+    def _geo_vectors(self, frames: torch.Tensor):
+        """frames [N, Q'] -> (sem [N,Dc], ac_cum [N,Q'-1,Dc]) where ac_cum[:, m] is the running sum of
+        acoustic codewords of codebooks 1..m+1 (the residual-chain state)."""
+        Qp = frames.size(1)
+        idx = torch.arange(Qp, device=frames.device)
+        vec = self.codec_table[idx, frames]                            # [N,Q',Dc]
+        return vec[:, 0], vec[:, 1:].cumsum(dim=1)
+
+    def _logit_table(self) -> torch.Tensor:
+        """Per-codebook-normalised acoustic codeword table used for the similarity logit term."""
+        t = self.codec_table[1:].float()
+        t = t / (t.std(dim=(1, 2), keepdim=True) + 1e-6)
+        return t / math.sqrt(t.size(-1))                                # [Q-1,V,Dc]
+
     def frame_embeds(self, frames: torch.Tensor) -> torch.Tensor:
         """frames: [T, Q] long -> [T, D] (sum of per-codebook embeddings)."""
         Q, V = self.cfg.num_quantizers, self.cfg.codebook_size
         offs = torch.arange(Q, device=frames.device) * V
-        return self.audio_embed(frames + offs).sum(dim=1)
+        e = self.audio_embed(frames + offs).sum(dim=1)
+        if self.cfg.codec_embeds:
+            sem, ac_cum = self._geo_vectors(frames)
+            e = e + self.cg_back_sem(sem).to(e.dtype) + self.cg_back_ac(ac_cum[:, -1]).to(e.dtype)
+        return e
 
     def decoder_logits(self, h: torch.Tensor, frames: torch.Tensor) -> torch.Tensor:
         """Teacher-forced. h: [N, D] backbone states, frames: [N, Q] long.
@@ -153,9 +209,51 @@ class GemmaCSM(nn.Module):
         x0 = self.dec_in_proj(h).unsqueeze(1)                       # [N,1,dh]
         offs = torch.arange(Q - 1, device=frames.device) * V
         xe = self.dec_embed(frames[:, : Q - 1] + offs)               # [N,Q-1,dh]
+        if self.cfg.codec_embeds:
+            sem, ac_cum = self._geo_vectors(frames[:, : Q - 1])      # ac_cum: [N,Q-2,Dc]
+            add = torch.zeros_like(xe)
+            add[:, 0] = self.cg_dec_sem(sem).to(xe.dtype)
+            if Q > 2:
+                add[:, 1:] = self.cg_dec_ac(ac_cum).to(xe.dtype)
+            xe = xe + add
         x = torch.cat([x0, xe.to(x0.dtype)], dim=1)                  # [N,Q,dh]
         out = self.decoder(inputs_embeds=x).last_hidden_state        # [N,Q,dh]
-        return torch.einsum("nqd,qdv->nqv", out[:, 1:], self.ac_heads.to(out.dtype))
+        o = out[:, 1:]
+        logits = torch.einsum("nqd,qdv->nqv", o, self.ac_heads.to(o.dtype))
+        if self.cfg.codec_embeds:
+            g = torch.einsum("nqd,qdc->nqc", o, self.ac_geo.to(o.dtype))
+            logits = logits + torch.einsum("nqc,qvc->nqv", g, self._logit_table().to(g.dtype))
+        return logits
+
+    @torch.no_grad()
+    def sample_fine(self, h: torch.Tensor, c0: int, temperature: float, top_k: int,
+                    generator: torch.Generator | None = None, tbln: torch.Tensor | None = None) -> list[int]:
+        """Autoregressively sample codebooks 1..Q-1 of ONE frame given backbone state h [1,D] and c0."""
+        Q, V = self.cfg.num_quantizers, self.cfg.codebook_size
+        dev = h.device
+        e0 = self.dec_embed(torch.tensor([[c0]], device=dev))
+        geo = self.cfg.codec_embeds
+        if geo:
+            if tbln is None:
+                tbln = self._logit_table()
+            e0 = e0 + self.cg_dec_sem(self.codec_table[0, c0].view(1, 1, -1)).to(e0.dtype)
+            acc = torch.zeros(1, self.cfg.codec_dim, device=dev, dtype=self.codec_table.dtype)
+        x_dec = torch.cat([self.dec_in_proj(h).unsqueeze(1), e0.to(h.dtype)], dim=1)   # [1,2,dh]
+        codes = [c0]
+        for i in range(1, Q):
+            o = self.decoder(inputs_embeds=x_dec).last_hidden_state[:, -1]              # [1,dh]
+            lg = (o.float() @ self.ac_heads[i - 1].float())[0]
+            if geo:
+                lg = lg + ((o.float() @ self.ac_geo[i - 1].float()) @ tbln[i - 1].T)[0]
+            ci = _sample(lg, temperature, top_k, 1.0, generator)
+            codes.append(ci)
+            if i < Q - 1:
+                nxt = self.dec_embed(torch.tensor([[ci + i * V]], device=dev))
+                if geo:
+                    acc = acc + self.codec_table[i, ci].view(1, -1)
+                    nxt = nxt + self.cg_dec_ac(acc).unsqueeze(1).to(nxt.dtype)
+                x_dec = torch.cat([x_dec, nxt.to(x_dec.dtype)], dim=1)
+        return codes
 
     # --------------------------------------------------------------- training
     def _build_inputs(self, text_ids, text_len, codes, n_frames):
@@ -233,6 +331,7 @@ class GemmaCSM(nn.Module):
         x = torch.cat([embed(text_ids), self.sos_embed.to(embed.weight.dtype).unsqueeze(0)], dim=0).unsqueeze(0)
         full_x, past = x, None
         frames: list[list[int]] = []
+        tbln = self._logit_table() if self.cfg.codec_embeds else None
 
         while True:
             if use_cache:
@@ -251,18 +350,7 @@ class GemmaCSM(nn.Module):
             if c0 == V:
                 break
 
-            codes = [c0]
-            x_dec = torch.cat(
-                [self.dec_in_proj(h).unsqueeze(1),
-                 self.dec_embed(torch.tensor([[c0]], device=dev))], dim=1)  # [1,2,dh]
-            for i in range(1, Q):
-                o = self.decoder(inputs_embeds=x_dec).last_hidden_state[:, -1]   # [1,dh]
-                lg = (o.float() @ self.ac_heads[i - 1].float())[0]
-                ci = _sample(lg, temperature_ac, top_k_ac, 1.0, generator)
-                codes.append(ci)
-                if i < Q - 1:
-                    nxt = self.dec_embed(torch.tensor([[ci + i * V]], device=dev))
-                    x_dec = torch.cat([x_dec, nxt.to(x_dec.dtype)], dim=1)
+            codes = self.sample_fine(h, c0, temperature_ac, top_k_ac, generator, tbln)
             frames.append(codes)
 
             nxt_x = self.frame_embeds(torch.tensor([codes], device=dev)).unsqueeze(0).to(full_x.dtype)
@@ -294,4 +382,10 @@ class GemmaCSM(nn.Module):
     def load_weights_from(self, path: str | Path) -> None:
         """Load weights from a checkpoint dir into this (already built) model."""
         state = torch.load(Path(path) / "model.pt", map_location="cpu")
-        self.load_state_dict(state)
+        res = self.load_state_dict(state, strict=False)
+        new_ok = ("codec_table", "cg_back_", "cg_dec_", "ac_geo")
+        bad_missing = [k for k in res.missing_keys if not k.startswith(new_ok)]
+        if bad_missing or res.unexpected_keys:
+            raise RuntimeError(f"checkpoint mismatch: missing {bad_missing}, unexpected {res.unexpected_keys}")
+        if res.missing_keys:
+            print(f"[load] new (zero-initialised) weights not in checkpoint: {len(res.missing_keys)} tensors", flush=True)

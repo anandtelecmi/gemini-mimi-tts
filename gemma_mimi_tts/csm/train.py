@@ -81,11 +81,22 @@ def main() -> None:
         decoder_frame_fraction=mc.get("decoder_frame_fraction", 1.0),
         c0_loss_weight=mc.get("c0_loss_weight", 1.0),
         acoustic_loss_weight=mc.get("acoustic_loss_weight", 1.0),
+        codec_embeds=mc.get("codec_embeds", False),
+        codec_dim=mc.get("codec_dim", 256),
     )
     model = GemmaCSM(csm_cfg, dtype=torch.float32)
     if args.init_from:
         model.load_weights_from(args.init_from)
         print(f"[train] initialised weights from {args.init_from}")
+    if csm_cfg.codec_embeds:
+        from transformers import MimiModel
+        mimi = MimiModel.from_pretrained(mc["mimi_repo"])
+        if mimi.config.vector_quantization_hidden_dimension != csm_cfg.codec_dim:
+            raise SystemExit(f"Mimi codebook dim is {mimi.config.vector_quantization_hidden_dimension}; "
+                             f"set model.codec_dim to that")
+        model.set_codec_table(GemmaCSM.build_codec_table(mimi, Q))
+        del mimi
+        print(f"[train] loaded Mimi codeword table {tuple(model.codec_table.shape)}", flush=True)
     model.to(device).train()
     if tc.get("gradient_checkpointing"):
         model.backbone.gradient_checkpointing_enable()

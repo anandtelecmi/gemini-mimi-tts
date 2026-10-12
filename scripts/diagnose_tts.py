@@ -31,6 +31,8 @@ from gemma_mimi_tts.model.mimi_codec import MIMI_SAMPLE_RATE, MimiCodec
 @torch.no_grad()
 def oracle_c0(model, item, device, dtype, temperature, top_k, gen):
     """Teacher-force the backbone with the real frames; sample codebooks 1..Q-1 given the REAL c0."""
+    if model.cfg.codec_embeds:
+        raise SystemExit('this oracle path does not implement codec_embeds; use model.generate-based outputs')
     Q, V = model.cfg.num_quantizers, model.cfg.codebook_size
     text = item["text_ids"].long().unsqueeze(0).to(device)
     codes = item["codes"].long().unsqueeze(0).to(device)          # [1,Q,T]
