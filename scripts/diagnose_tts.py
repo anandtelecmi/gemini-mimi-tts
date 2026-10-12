@@ -89,7 +89,7 @@ def main() -> None:
     ids = torch.tensor([tok.bos_token_id] + tok(args.text, add_special_tokens=False)["input_ids"], device=dev)
 
     def gen(temp_ac, top_k_ac):
-        g = torch.Generator(device="cpu"); g.manual_seed(args.seed)
+        g = torch.Generator(device=dev); g.manual_seed(args.seed)
         return model.generate(ids, max_frames=600, min_frames=10,
                               temperature_c0=args.temperature_c0, top_k_c0=args.top_k_c0,
                               temperature_ac=temp_ac, top_k_ac=top_k_ac, generator=g)
@@ -100,7 +100,7 @@ def main() -> None:
     save("gen_greedyac", gen(0.0, 1))
 
     ds = CodesDataset(args.val_pattern, num_quantizers=Q)
-    g = torch.Generator(device="cpu"); g.manual_seed(args.seed)
+    g = torch.Generator(device=dev); g.manual_seed(args.seed)
     for j in range(args.n_oracle):
         item = ds[j * 37 % len(ds)]
         print(f"val utt {j}: {tok.decode(item['text_ids'][1:].tolist())[:90]!r}")
