@@ -97,6 +97,9 @@ def main() -> None:
         model.set_codec_table(GemmaCSM.build_codec_table(mimi, Q))
         del mimi
         print(f"[train] loaded Mimi codeword table {tuple(model.codec_table.shape)}", flush=True)
+    if tc.get("freeze_backbone"):
+        model.freeze_for_decoder_training()
+        print("[train] backbone + c0 path FROZEN: training the audio decoder only", flush=True)
     model.to(device).train()
     if tc.get("gradient_checkpointing"):
         model.backbone.gradient_checkpointing_enable()
@@ -128,8 +131,8 @@ def main() -> None:
                 {"params": no_decay, "lr": lr, "weight_decay": 0.0}]
 
     opt = torch.optim.AdamW(
-        groups(list(model.backbone.parameters()), tc["backbone_lr"])
-        + groups(model.new_parameters(), tc["new_lr"]),
+        groups([p for p in model.backbone.parameters() if p.requires_grad], tc["backbone_lr"])
+        + groups([p for p in model.new_parameters() if p.requires_grad], tc["new_lr"]),
         betas=(0.9, 0.95),
     )
     steps_per_epoch = max(1, len(train_loader) // accum)

@@ -150,9 +150,22 @@ class GemmaCSM(nn.Module):
             for m in (self.cg_back_sem, self.cg_back_ac, self.cg_dec_sem, self.cg_dec_ac):
                 nn.init.zeros_(m.weight)
 
+        self.backbone_frozen = False
         self.to(dtype)
 
     # ------------------------------------------------------------------ utils
+    def freeze_for_decoder_training(self) -> None:
+        """Freeze everything that produces or reads codebook 0 (backbone, input embeddings, c0 head) and
+        run the backbone without autograd. Only the audio decoder (and its geometry inputs/outputs) trains,
+        so codebook-0 quality is pinned and the decoder can keep learning without the backbone memorising."""
+        self.backbone_frozen = True
+        frozen = [self.backbone, self.audio_embed, self.c0_head]
+        if self.cfg.codec_embeds:
+            frozen += [self.cg_back_sem, self.cg_back_ac]
+        for m in frozen:
+            for p in m.parameters():
+                p.requires_grad_(False)
+        self.sos_embed.requires_grad_(False)
     def new_parameters(self):
         """Everything except the pretrained Gemma backbone."""
         bb = {id(p) for p in self.backbone.parameters()}
@@ -282,7 +295,8 @@ class GemmaCSM(nn.Module):
         V = cfg.codebook_size
         codes = codes[:, : cfg.num_quantizers]
         x, mask = self._build_inputs(text_ids, text_len, codes, n_frames)
-        hidden = self.backbone(inputs_embeds=x, attention_mask=mask).last_hidden_state
+        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.backbone_frozen):
+            hidden = self.backbone(inputs_embeds=x, attention_mask=mask).last_hidden_state
 
         h_c0, tgt_c0, h_dec, fr = [], [], [], []
         eos = torch.tensor([V], device=codes.device, dtype=torch.long)

@@ -83,6 +83,21 @@ def test_cache_equals_nocache_and_roundtrip():
     assert a == c
 
 
+def test_freeze_for_decoder_training():
+    m = make(True).train()
+    ref = m(**batch())["loss"].detach()
+    m.freeze_for_decoder_training()
+    out = m(**batch())
+    assert torch.allclose(out["loss"].detach(), ref, atol=1e-5)
+    out["loss"].backward()
+    for mod in (m.backbone, m.audio_embed, m.c0_head, m.cg_back_sem, m.cg_back_ac):
+        assert all(p.grad is None for p in mod.parameters())
+    assert m.sos_embed.grad is None
+    assert m.dec_embed.weight.grad.abs().sum() > 0
+    assert m.ac_heads.grad.abs().sum() > 0
+    assert m.dec_in_proj.weight.grad.abs().sum() > 0
+
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):
