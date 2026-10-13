@@ -240,8 +240,11 @@ class GemmaCSM(nn.Module):
 
     @torch.no_grad()
     def sample_fine(self, h: torch.Tensor, c0: int, temperature: float, top_k: int,
-                    generator: torch.Generator | None = None, tbln: torch.Tensor | None = None) -> list[int]:
-        """Autoregressively sample codebooks 1..Q-1 of ONE frame given backbone state h [1,D] and c0."""
+                    generator: torch.Generator | None = None, tbln: torch.Tensor | None = None,
+                    deep_from: int = 0, temperature_deep: float | None = None,
+                    top_k_deep: int | None = None) -> list[int]:
+        """Autoregressively sample codebooks 1..Q-1 of ONE frame given backbone state h [1,D] and c0.
+        Codebooks >= deep_from use (temperature_deep, top_k_deep) when given (e.g. greedy for the noisy deep ones)."""
         Q, V = self.cfg.num_quantizers, self.cfg.codebook_size
         dev = h.device
         e0 = self.dec_embed(torch.tensor([[c0]], device=dev))
@@ -258,7 +261,10 @@ class GemmaCSM(nn.Module):
             lg = (o.float() @ self.ac_heads[i - 1].float())[0]
             if geo:
                 lg = lg + ((o.float() @ self.ac_geo[i - 1].float()) @ tbln[i - 1].T)[0]
-            ci = _sample(lg, temperature, top_k, 1.0, generator)
+            if temperature_deep is not None and i >= deep_from:
+                ci = _sample(lg, temperature_deep, top_k_deep if top_k_deep is not None else top_k, 1.0, generator)
+            else:
+                ci = _sample(lg, temperature, top_k, 1.0, generator)
             codes.append(ci)
             if i < Q - 1:
                 nxt = self.dec_embed(torch.tensor([[ci + i * V]], device=dev))
@@ -337,6 +343,9 @@ class GemmaCSM(nn.Module):
         top_k_ac: int = 20,
         use_cache: bool = True,
         generator: torch.Generator | None = None,
+        deep_from: int = 0,
+        temperature_deep: float | None = None,
+        top_k_deep: int | None = None,
     ) -> list[list[int]]:
         """text_ids: 1-D long tensor (bos + text). Returns codes[Q][T]."""
         Q, V = self.cfg.num_quantizers, self.cfg.codebook_size
@@ -364,7 +373,8 @@ class GemmaCSM(nn.Module):
             if c0 == V:
                 break
 
-            codes = self.sample_fine(h, c0, temperature_ac, top_k_ac, generator, tbln)
+            codes = self.sample_fine(h, c0, temperature_ac, top_k_ac, generator, tbln,
+                                     deep_from, temperature_deep, top_k_deep)
             frames.append(codes)
 
             nxt_x = self.frame_embeds(torch.tensor([codes], device=dev)).unsqueeze(0).to(full_x.dtype)

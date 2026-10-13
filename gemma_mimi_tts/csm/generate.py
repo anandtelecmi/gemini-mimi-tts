@@ -37,6 +37,11 @@ def main() -> None:
     ap.add_argument("--top_k_ac", type=int, default=None)
     ap.add_argument("--no_cache", action="store_true", help="disable KV cache (slow, but a safe fallback)")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--deep_from", type=int, default=8, help="codebooks >= this use the *_deep sampling settings")
+    ap.add_argument("--temperature_deep", type=float, default=None, help="e.g. 0 = greedy for the deep codebooks")
+    ap.add_argument("--top_k_deep", type=int, default=None)
+    ap.add_argument("--decode_q", type=int, nargs="+", default=None,
+                    help="decode the SAME generated codes with only the first K codebooks (writes <out>_q<K>.wav each)")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
@@ -64,14 +69,24 @@ def main() -> None:
         top_k_ac=args.top_k_ac if args.top_k_ac is not None else inf.get("top_k_ac", 20),
         use_cache=not args.no_cache,
         generator=gen if args.seed is not None else None,
+        deep_from=args.deep_from,
+        temperature_deep=args.temperature_deep,
+        top_k_deep=args.top_k_deep,
     )
     if not codes[0]:
         raise RuntimeError("model produced no frames (stopped immediately) - try --min_frames 20 or train longer")
 
-    wav = codec.decode_codes(codes)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(args.out), wav.float().numpy(), MIMI_SAMPLE_RATE)
-    print(f"Wrote {args.out} ({len(codes[0])} frames, {wav.shape[0]/MIMI_SAMPLE_RATE:.2f}s)")
+    if args.decode_q:
+        for k in args.decode_q:
+            wav = codec.decode_codes(codes[:k])
+            p = args.out.with_name(f"{args.out.stem}_q{k}{args.out.suffix}")
+            sf.write(str(p), wav.float().numpy(), MIMI_SAMPLE_RATE)
+            print(f"Wrote {p} ({len(codes[0])} frames, first {k} codebooks)")
+    else:
+        wav = codec.decode_codes(codes)
+        sf.write(str(args.out), wav.float().numpy(), MIMI_SAMPLE_RATE)
+        print(f"Wrote {args.out} ({len(codes[0])} frames, {wav.shape[0]/MIMI_SAMPLE_RATE:.2f}s)")
 
 
 if __name__ == "__main__":
