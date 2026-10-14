@@ -98,6 +98,18 @@ def speaker_tag_map(counts: Counter, min_utts: int) -> dict[str, str]:
     return tags
 
 
+def extend_speaker_tags(existing: dict[tuple[str, str], str], counts: Counter, min_utts: int) -> dict[tuple[str, str], str]:
+    """Keep every tag already assigned (so later runs, e.g. studio after synthetic, never renumber);
+    new speakers with >= min_utts get the next free index."""
+    tags = dict(existing)
+    nxt = 1 + max([int(t[1:]) for t in tags.values()], default=-1)
+    for key, n in counts.most_common():
+        if key not in tags and n >= min_utts:
+            tags[key] = f"s{nxt:03d}"
+            nxt += 1
+    return tags
+
+
 # ------------------------------------------------------------------ main
 def load_records(jsonl_paths: list[Path]) -> list[dict]:
     import soundfile as sf
@@ -213,11 +225,14 @@ def main() -> None:
     for r in kept:
         by_src_spk[r["source"]].append(r["speaker"])
     held = split_speakers(by_src_spk, args.val_speakers, args.seed)
-    tags = speaker_tag_map(Counter((r["source"], r["speaker"]) for r in kept), args.min_spk_utts) if args.speaker_tags else {}
+    sp_file = args.output_dir / "speakers.json"
+    old = {tuple(k.split("|", 1)): v for k, v in json.loads(sp_file.read_text()).items()} if sp_file.exists() else {}
+    tags = (extend_speaker_tags(old, Counter((r["source"], r["speaker"]) for r in kept), args.min_spk_utts)
+            if args.speaker_tags else old)
     tag_of = {k: v for k, v in tags.items()}
     print(f"[split] held-out speakers: {sorted(held)}")
     if args.speaker_tags:
-        print(f"[tags] {len(tags)} speaker tag(s)")
+        print(f"[tags] {len(tags)} speaker tag(s) ({len(tags) - len(old)} new); existing tags are never renumbered")
 
     splits: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in kept:
@@ -263,7 +278,9 @@ def main() -> None:
     (args.output_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     (args.output_dir / "speakers.json").write_text(
         json.dumps({f"{s}|{k}": t for (s, k), t in tags.items()}, ensure_ascii=False, indent=2))
-    (args.output_dir / "stats.json").write_text(json.dumps(stats, indent=2))
+    st_file = args.output_dir / "stats.json"
+    old_stats = json.loads(st_file.read_text()) if st_file.exists() else {}
+    st_file.write_text(json.dumps({**old_stats, **stats}, indent=2))
     print("wrote meta.json, speakers.json, stats.json in", args.output_dir)
 
 
