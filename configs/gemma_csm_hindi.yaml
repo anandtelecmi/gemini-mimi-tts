@@ -1,0 +1,52 @@
+# Hindi H1: pretrain on ALL Hindi data (~1000 h synthetic + studio), speaker-tagged text ("[s003] ...").
+# Run with:  --init_from runs/gemma_csm_emilia_dec/best      (English-pretrained, codec-aware)
+# Data from: scripts/prepare_jsonl_dataset.py --speaker_tags  -> data/processed/hindi_csm
+# Next: configs/gemma_csm_hindi_ft.yaml (studio only), then gemma_csm_hindi_dec.yaml.
+
+
+model:
+  text_backbone: google/gemma-3-1b-pt
+  mimi_repo: kyutai/mimi
+  num_quantizers: 16
+  decoder:
+    hidden_size: 1024
+    num_layers: 6
+    num_heads: 8
+    intermediate_size: 3072
+  codec_embeds: true            # feed Mimi's codeword vectors / residual-chain state to backbone + decoder
+  decoder_frame_fraction: 0.5   # decoder sees a random half of the frames each step (faster, CSM-style)
+  c0_loss_weight: 1.0
+  acoustic_loss_weight: 1.0
+
+data:
+  train_shards: data/processed/hindi_csm/train-*.pt
+  val_shards: data/processed/hindi_csm/val-*.pt
+  max_seq_len: 1024
+
+training:
+  output_dir: runs/gemma_csm_hindi
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4     # effective batch 32 utterances
+  backbone_lr: 5.0e-5
+  new_lr: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.02
+  min_lr_ratio: 0.1
+  num_train_epochs: 4                # backbone memorises after ~3 passes (seen on Emilia); keep best/
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: false
+  logging_steps: 50
+  eval_steps: 1000
+  eval_batches: 100
+  save_steps: 4000
+  save_total_limit: 2
+  num_workers: 4
+  seed: 42
+
+inference:
+  max_frames: 600
+  temperature_c0: 0.9
+  top_k_c0: 50
+  temperature_ac: 0.7
+  top_k_ac: 20
