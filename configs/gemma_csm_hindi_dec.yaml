@@ -31,7 +31,7 @@ training:
   warmup_ratio: 0.05
   min_lr_ratio: 0.1
   freeze_backbone: true
-  num_train_epochs: 5                # watch val ac (eval every 100 steps); best/ is kept by val loss
+  num_train_epochs: 3               # watch val ac (eval every 100 steps); best/ is kept by val loss
   max_grad_norm: 1.0
   bf16: true
   gradient_checkpointing: false
