@@ -1,6 +1,7 @@
-# Hindi H1: pretrain on ALL Hindi data (~1000 h synthetic + studio), speaker-tagged text ("[s003] ...").
+# Hindi H1: pretrain on the ~1000 h SYNTHETIC Hindi data only, speaker-tagged text ("[s003] ...").
 # Run with:  --init_from runs/gemma_csm_emilia_dec/best      (English-pretrained, codec-aware)
 # Data from: scripts/prepare_jsonl_dataset.py --speaker_tags  -> data/processed/hindi_csm
+# Replace <SYNTH_SOURCE> with the synthetic bucket name as printed by the prep script (shard names are per source).
 # Next: configs/gemma_csm_hindi_ft.yaml (studio only), then gemma_csm_hindi_dec.yaml.
 
 
@@ -19,8 +20,8 @@ model:
   acoustic_loss_weight: 1.0
 
 data:
-  train_shards: data/processed/hindi_csm/train-*.pt
-  val_shards: data/processed/hindi_csm/val-*.pt
+  train_shards: data/processed/hindi_csm/train-<SYNTH_SOURCE>-*.pt
+  val_shards: data/processed/hindi_csm/val-<SYNTH_SOURCE>-*.pt
   max_seq_len: 1024
 
 training:
