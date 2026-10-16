@@ -17,11 +17,19 @@ def clean_text(t):
     return re.sub(r"\s+", " ", t).strip()
 
 
+def num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None   # strings like "" / "nan" / None
+
+
 def keep(row, a):
-    d = row.get("duration") or 0
+    d = num(row.get("duration")) or 0
     if not (a.min_dur <= d <= a.max_dur): return False
-    if row.get("snr") is not None and row["snr"] < a.min_snr: return False
-    if row.get("cer") is not None and row["cer"] > a.max_cer: return False
+    snr, cer = num(row.get("snr")), num(row.get("cer"))
+    if snr is not None and snr == snr and snr < a.min_snr: return False
+    if cer is not None and cer == cer and cer > a.max_cer: return False
     return True
 
 
@@ -60,7 +68,7 @@ def main():
         text = clean_text(row.get(a.text_field) or row.get("text"))
         if not text or not keep(row, a): continue
         sid = re.sub(r"\W+", "", str(row["speaker_id"]))
-        spk[sid] += 1; hrs += row["duration"] / 3600; n += 1
+        spk[sid] += 1; hrs += num(row["duration"]) / 3600; n += 1
         if a.report_only: continue
         au = row["audio"]
         wav, sr = sf.read(io.BytesIO(au["bytes"]), dtype="float32") if au.get("bytes") else sf.read(au["path"], dtype="float32")
