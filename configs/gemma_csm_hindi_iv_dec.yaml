@@ -1,0 +1,51 @@
+# Hindi H3: DECODER-ONLY polish on the studio recordings (backbone / codebook-0 frozen).
+# Run with:  --init_from runs/gemma_csm_hindi_ft/best
+
+
+model:
+  text_backbone: google/gemma-3-1b-pt
+  mimi_repo: kyutai/mimi
+  num_quantizers: 16
+  codec_embeds: true
+  decoder:
+    hidden_size: 1024
+    num_layers: 6
+    num_heads: 8
+    intermediate_size: 3072
+  decoder_frame_fraction: 1.0
+  c0_loss_weight: 1.0
+  acoustic_loss_weight: 1.0
+
+data:
+  train_shards: data/processed/hindi_csm/train-studio_recordings-*.pt
+  val_shards: data/processed/hindi_csm/val-studio_recordings-*.pt
+  max_seq_len: 1024
+
+training:
+  output_dir: runs/gemma_csm_hindi_iv_dec
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4
+  backbone_lr: 1.0e-5
+  new_lr: 1.0e-4
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.1
+  freeze_backbone: true
+  num_train_epochs: 3                # 80 h studio, backbone frozen; watch val ac, best/ is kept by val loss
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: false
+  logging_steps: 20
+  eval_steps: 100
+  eval_batches: 50
+  save_steps: 400
+  save_total_limit: 2
+  num_workers: 2
+  seed: 42
+
+inference:
+  max_frames: 600
+  temperature_c0: 0.9
+  top_k_c0: 50
+  temperature_ac: 0.8
+  top_k_ac: 50
